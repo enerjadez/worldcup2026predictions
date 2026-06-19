@@ -226,14 +226,24 @@
 /* ============================================================
    BACKEND CONFIG  —  paste your Supabase values between the quotes.
    Until you do, the game runs in SOLO mode (this device only).
-   See the chat for the 4-step Supabase setup.
+
+   SUPABASE_URL : Project URL, e.g. https://abcd1234.supabase.co
+   SUPABASE_KEY : the PUBLIC client key. New projects call it the
+                  "publishable" key (sb_publishable_...). Older projects
+                  call it the "anon public" key (a long eyJ... token).
+                  Either works — never paste the secret/service_role key.
 ============================================================ */
-const SUPABASE_URL = "https://YOUR-PROJECT.supabase.co";  // ← paste Project URL
-const SUPABASE_KEY = "YOUR-ANON-KEY";                     // ← paste anon public key
+const SUPABASE_URL = "https://tbsewclcesggxaqfvmbm.supabase.co";  // ← paste Project URL
+const SUPABASE_KEY = "sb_publishable_ibYsuOp_XMzStXuzwjNzaA_3sAemrrn";  // ← paste publishable (or anon) key
 
 const ONLINE = /^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/.test(SUPABASE_URL) && SUPABASE_KEY.length > 30;
 const REST = SUPABASE_URL.replace(/\/$/,"") + "/rest/v1/";
-const HEAD = {apikey:SUPABASE_KEY, Authorization:"Bearer "+SUPABASE_KEY, "Content-Type":"application/json"};
+// Legacy anon keys are JWTs (eyJ...) and go in the Bearer header.
+// New publishable keys (sb_...) must NOT be sent as Bearer — apikey alone authenticates as anon.
+const HEAD = Object.assign(
+  {apikey:SUPABASE_KEY, "Content-Type":"application/json"},
+  /^eyJ/.test(SUPABASE_KEY) ? {Authorization:"Bearer "+SUPABASE_KEY} : {}
+);
 
 /* ============ DATA: real World Cup 2026 fixtures ============ */
 const FLAG={SCO:"🏴󠁧󠁢󠁳󠁣󠁴󠁿",MAR:"🇲🇦",AUT:"🇦🇹",JOR:"🇯🇴",POR:"🇵🇹",COD:"🇨🇩",ENG:"🏴󠁧󠁢󠁥󠁮󠁧󠁿",CRO:"🇭🇷",
@@ -489,12 +499,22 @@ $("#refreshBtn").onclick=()=>{refreshAll();toast("Board refreshed");};
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>setView(t.dataset.view));
 setInterval(()=>{if(me&&!document.hidden)refreshAll();},25000);
 
-/* mode banner */
-$("#modeDot").className="dot "+(ONLINE?"on":"off");
-$("#modeText").textContent=ONLINE?"Shared pool — friends see one live leaderboard":"Solo mode — add Supabase keys in the file to share with friends";
+/* connection self-test — tells you exactly what's wrong */
+async function checkConnection(){
+  const dot=$("#modeDot"), txt=$("#modeText");
+  if(!ONLINE){dot.className="dot off";txt.textContent="Solo mode — Supabase keys not added, so friends can't see your board";return;}
+  try{
+    const r=await fetch(REST+"players?select=name&limit=1",{headers:HEAD});
+    if(r.ok){dot.className="dot on";txt.textContent="Shared pool — connected to your database ✓";}
+    else if(r.status===404){dot.className="dot off";txt.textContent="Connected, but the tables aren't found (404) — run the SQL setup step";}
+    else if(r.status===401||r.status===403){dot.className="dot off";txt.textContent="Connected, but access denied ("+r.status+") — add the table policies in SQL";}
+    else{dot.className="dot off";txt.textContent="Supabase returned error "+r.status+" — check setup";}
+  }catch(e){dot.className="dot off";txt.textContent="Can't reach Supabase — double-check the Project URL";}
+}
 
 /* boot */
 (async function(){
+  checkConnection();
   try{hostResults=await dbFetchResults();}catch(e){}
   const saved=LS.read("mp:me","");
   if(saved)await enter(saved);else $("#nameInput").focus();
