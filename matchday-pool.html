@@ -151,6 +151,24 @@
   .prow .pn{flex:1;font-weight:700;font-size:15px}
   .prow .pscore{font-family:'Anton';font-size:22px;background:var(--ink);color:var(--paper);border-radius:9px;padding:3px 11px}
   .prow .hidden-score{font-family:'DM Mono';font-size:12px;color:var(--ink-soft)}
+
+  /* avatar chip + edit profile form */
+  .avachip{display:inline-grid;place-items:center;border-radius:9px;color:#22160a;font-family:'Anton';font-weight:400;flex:none;line-height:1}
+  .editprev{display:flex;align-items:center;gap:12px;margin:6px 0 16px}
+  .editrow{margin:14px 0 4px}
+  .editrow label{display:block;font-family:'DM Mono';font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-soft);margin-bottom:7px}
+  .editrow input[type=text]{width:100%}
+  .picker{display:flex;flex-wrap:wrap;gap:8px}
+  .opt{width:44px;height:44px;border-radius:11px;border:2px solid var(--paper-edge);display:grid;place-items:center;font-size:22px;cursor:pointer;background:#fff;color:#22160a;font-family:'Anton';padding:0}
+  .opt:hover{border-color:var(--ink-soft)}
+  .opt.sel{border-color:var(--ink);background:#fff7e6}
+  .col{width:36px;height:36px;border-radius:50%;cursor:pointer;border:3px solid transparent}
+  .col.sel{border-color:var(--ink)}
+  .savebtn{margin-top:20px;width:100%;background:var(--marigold);color:#22160a;border:none;border-radius:12px;padding:13px;font-weight:700;font-size:16px;cursor:pointer}
+  .savebtn:hover{filter:brightness(1.06)}
+  .savebtn:focus-visible,.opt:focus-visible,.col:focus-visible{outline:3px solid var(--mint);outline-offset:2px}
+  .logout{margin-top:8px;width:100%;background:none;border:none;color:var(--coral);font-weight:600;font-size:13px;cursor:pointer;padding:8px}
+  .logout:hover{text-decoration:underline}
   .hidden{display:none!important}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   @media (max-width:480px){.scoreface{width:46px;height:52px;font-size:32px}.tname{font-size:14px}.ptbox .n{font-size:28px}}
@@ -185,7 +203,7 @@
         <div class="ava" id="ava">?</div>
         <div>
           <div class="name" id="meName">—</div>
-          <div class="role"><button class="linkbtn" id="switchBtn">switch player</button> · <button class="linkbtn" id="refreshBtn">refresh board</button></div>
+          <div class="role"><button class="linkbtn" id="editBtn">edit profile</button> · <button class="linkbtn" id="refreshBtn">refresh board</button></div>
         </div>
       </div>
       <div class="ptbox"><div class="n" id="mePts">0</div><div class="l">your points</div></div>
@@ -285,15 +303,23 @@ const LS={
 };
 async function dbFetchPlayers(){
   if(!ONLINE) return Object.values(LS.read("mp:players",{}));
-  const r=await fetch(REST+"players?select=name,real,preds",{headers:HEAD});
+  const r=await fetch(REST+"players?select=*",{headers:HEAD});
   if(!r.ok) throw new Error("players read "+r.status);
-  return (await r.json()).map(x=>({name:x.name,real:x.real||"",preds:x.preds||{}}));
+  return (await r.json()).map(x=>({name:x.name,real:x.real||"",avatar:x.avatar||"",color:x.color||"",preds:x.preds||{}}));
 }
 async function dbSavePlayer(p){
-  if(!ONLINE){const all=LS.read("mp:players",{});all[p.name]={name:p.name,real:p.real||"",preds:p.preds};LS.write("mp:players",all);return;}
-  const r=await fetch(REST+"players",{method:"POST",headers:{...HEAD,Prefer:"resolution=merge-duplicates"},
-    body:JSON.stringify([{name:p.name,real:p.real||"",preds:p.preds,updated_at:Date.now()}])});
+  if(!ONLINE){const all=LS.read("mp:players",{});all[p.name]={name:p.name,real:p.real||"",avatar:p.avatar||"",color:p.color||"",preds:p.preds};LS.write("mp:players",all);return;}
+  const full={name:p.name,real:p.real||"",avatar:p.avatar||"",color:p.color||"",preds:p.preds,updated_at:Date.now()};
+  let r=await fetch(REST+"players",{method:"POST",headers:{...HEAD,Prefer:"resolution=merge-duplicates"},body:JSON.stringify([full])});
+  if(!r.ok){ // retry without avatar/color in case those columns don't exist yet
+    const min={name:p.name,real:p.real||"",preds:p.preds,updated_at:Date.now()};
+    r=await fetch(REST+"players",{method:"POST",headers:{...HEAD,Prefer:"resolution=merge-duplicates"},body:JSON.stringify([min])});
+  }
   if(!r.ok) throw new Error("player save "+r.status);
+}
+async function dbDeletePlayer(name){
+  if(!ONLINE){const all=LS.read("mp:players",{});delete all[name];LS.write("mp:players",all);return;}
+  await fetch(REST+"players?name=eq."+encodeURIComponent(name),{method:"DELETE",headers:HEAD});
 }
 async function dbFetchResults(){
   if(!ONLINE) return LS.read("mp:results",{});
@@ -325,6 +351,13 @@ function ptsClass(p){return p===5?"p5":p===3?"p3":p===1?"p1":"p0";}
 function ptsLabel(p){return p===5?"BULLSEYE":p===3?"SO CLOSE":p===1?"CALLED IT":"MISS";}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
 function picksFor(id){return allPlayers.filter(p=>p.preds&&p.preds[id]);}
+
+/* avatar helpers */
+const AVATAR_EMOJI=["⚽","🏆","🔥","⭐","🦁","🐐","🚀","👑","🎯","🧤","🥅","💪","🦅","🐉","🌟","⚡","🎩","🐯","🦈","🍀"];
+const AVATAR_COLORS=["#F6A21E","#E8553A","#6FE0B0","#5AA9E6","#B98BE0","#2BB6A3","#EF7FA8","#F2C744"];
+function avatarContent(p){return p&&p.avatar?p.avatar:(p&&p.name?p.name[0].toUpperCase():"?");}
+function avatarBg(p){return p&&p.color?p.color:"var(--marigold)";}
+function avatarChip(p,size){const s=size||30;return `<span class="avachip" style="background:${avatarBg(p)};width:${s}px;height:${s}px;font-size:${Math.round(s*0.5)}px">${esc(avatarContent(p))}</span>`;}
 
 function totalPoints(player){let pts=0;FIXTURES.forEach(f=>{const res=effResult(f);if(!res)return;const s=score(player.preds&&player.preds[f.id],res);if(s!=null)pts+=s;});return pts;}
 function playerStats(player){let pts=0,exact=0,graded=0,hits=0;FIXTURES.forEach(f=>{const res=effResult(f);if(!res)return;const p=player.preds&&player.preds[f.id];if(!p)return;const s=score(p,res);graded++;pts+=s;if(s===5)exact++;if(s>0)hits++;});return{pts,exact,graded,acc:graded?Math.round(hits/graded*100):0};}
@@ -444,6 +477,58 @@ function closeReveal(){$("#overlay").classList.remove("show");}
 $("#overlay").addEventListener("click",e=>{if(e.target.id==="overlay")closeReveal();});
 document.addEventListener("keydown",e=>{if(e.key==="Escape")closeReveal();});
 
+/* ============ edit profile ============ */
+let editPick={avatar:"",color:""};
+function openEditProfile(){
+  editPick={avatar:me.avatar||"",color:me.color||""};
+  const emojiOpts=`<button class="opt${!editPick.avatar?" sel":""}" data-emoji="" aria-label="initial">Aa</button>`+
+    AVATAR_EMOJI.map(e=>`<button class="opt${editPick.avatar===e?" sel":""}" data-emoji="${e}">${e}</button>`).join("");
+  const colorOpts=AVATAR_COLORS.map(c=>`<button class="col${(me.color||AVATAR_COLORS[0])===c?" sel":""}" data-color="${c}" style="background:${c}" aria-label="colour"></button>`).join("");
+  $("#sheet").innerHTML=`
+    <div class="sheet-top">
+      <div><h3>Edit profile</h3><div class="matchsub">Your username, name and look on the board</div></div>
+      <button class="closeb" id="closeSheet" aria-label="close">×</button>
+    </div>
+    <div class="editprev">${avatarChip(me,52)}<div><div style="font-weight:700;font-size:17px" id="prevName">${esc(me.name)}</div><div style="font-family:'DM Mono';font-size:12px;color:var(--ink-soft)" id="prevReal">${esc(me.real||"")}</div></div></div>
+    <div class="editrow"><label>Username</label><input id="edName" type="text" maxlength="16" value="${esc(me.name)}"></div>
+    <div class="editrow"><label>Real name</label><input id="edReal" type="text" maxlength="30" value="${esc(me.real||"")}"></div>
+    <div class="editrow"><label>Avatar</label><div class="picker" id="edEmoji">${emojiOpts}</div></div>
+    <div class="editrow"><label>Colour</label><div class="picker" id="edColor">${colorOpts}</div></div>
+    <button class="savebtn" id="saveProfile">Save profile</button>
+    <button class="logout" id="logoutBtn">Log out / switch to another player</button>`;
+  $("#overlay").classList.add("show");
+  $("#closeSheet").onclick=closeReveal;
+  $("#saveProfile").onclick=saveProfile;
+  $("#logoutBtn").onclick=logOut;
+  const refreshPrev=()=>{const chip=$("#sheet .avachip");chip.style.background=editPick.color||AVATAR_COLORS[0];
+    chip.textContent=editPick.avatar||(($("#edName").value||me.name)[0]||"?").toUpperCase();};
+  $("#edEmoji").querySelectorAll(".opt").forEach(b=>b.onclick=()=>{editPick.avatar=b.dataset.emoji;
+    $("#edEmoji").querySelectorAll(".opt").forEach(x=>x.classList.remove("sel"));b.classList.add("sel");refreshPrev();});
+  $("#edColor").querySelectorAll(".col").forEach(b=>b.onclick=()=>{editPick.color=b.dataset.color;
+    $("#edColor").querySelectorAll(".col").forEach(x=>x.classList.remove("sel"));b.classList.add("sel");refreshPrev();});
+  $("#edName").addEventListener("input",()=>{$("#prevName").textContent=$("#edName").value||"—";refreshPrev();});
+  $("#edReal").addEventListener("input",()=>{$("#prevReal").textContent=$("#edReal").value;});
+}
+async function saveProfile(){
+  const newName=$("#edName").value.trim().slice(0,16);
+  const newReal=$("#edReal").value.trim().slice(0,30);
+  if(!newName){toast("Username can't be empty");return;}
+  const oldName=me.name, renamed=newName.toLowerCase()!==oldName.toLowerCase();
+  if(renamed && allPlayers.some(p=>p.name.toLowerCase()===newName.toLowerCase())){toast("That username is already taken");return;}
+  const updated={name:newName,real:newReal,avatar:editPick.avatar||"",color:editPick.color||"",preds:me.preds||{}};
+  try{
+    await dbSavePlayer(updated);
+    if(renamed) await dbDeletePlayer(oldName);
+  }catch(e){toast("Saved locally — check connection");}
+  // update local state
+  allPlayers=allPlayers.filter(p=>p.name!==oldName && p.name!==newName);
+  allPlayers.push(updated);
+  me=updated;
+  LS.write("mp:me",me.name);
+  closeReveal();paintMe();renderFixtures();updatePoints();if(view==="board")renderBoard();
+  toast("Profile saved ✓");
+}
+
 /* ============ leaderboard ============ */
 function renderBoard(){
   const root=$("#view-board");
@@ -454,8 +539,8 @@ function renderBoard(){
   players.forEach((p,i)=>{const r=i+1;const rc=r===1?"gold":r===2?"sil":r===3?"brz":"";const medal=r===1?"🥇":r===2?"🥈":r===3?"🥉":r;
     html+=`<div class="lbrow${p.name===me.name?" you":""}">
       <div class="rank ${rc}">${medal}</div>
-      <div><div class="lbname">${esc(p.name)}${p.name===me.name?" (you)":""}</div>
-        <div class="lbmeta">${p.real?esc(p.real)+" · ":""}${p._s.exact} bullseye${p._s.exact===1?"":"s"} · ${p._s.graded} graded</div></div>
+      <div style="display:flex;align-items:center;gap:10px">${avatarChip(p,34)}<div><div class="lbname">${esc(p.name)}${p.name===me.name?" (you)":""}</div>
+        <div class="lbmeta">${p.real?esc(p.real)+" · ":""}${p._s.exact} bullseye${p._s.exact===1?"":"s"} · ${p._s.graded} graded</div></div></div>
       <div class="lbacc">${p._s.acc}%<br>hit rate</div>
       <div class="lbpts">${p._s.pts}</div></div>`;});
   html+=`</div>`;root.innerHTML=html;
@@ -468,18 +553,21 @@ async function enter(name, real){
   try{allPlayers=await dbFetchPlayers();}catch(e){allPlayers=[];}
   const existing=allPlayers.find(p=>p.name.toLowerCase()===name.toLowerCase());
   real=(real||"").trim().slice(0,30)||(existing&&existing.real)||"";
-  me=existing?{name:existing.name,real:real,preds:existing.preds||{}}:{name,real,preds:{}};
+  me=existing?{name:existing.name,real:real,avatar:existing.avatar||"",color:existing.color||"",preds:existing.preds||{}}:{name,real,avatar:"",color:"",preds:{}};
   LS.write("mp:me",me.name);
   try{hostResults=await dbFetchResults();}catch(e){}
   const idx=allPlayers.findIndex(p=>p.name===me.name);
   if(idx<0)allPlayers.push(me);else allPlayers[idx]=me;
   try{await dbSavePlayer(me);}catch(e){}
   $("#join").classList.add("hidden");$("#game").classList.remove("hidden");
-  $("#meName").innerHTML=esc(me.name)+(me.real?` <span style="color:var(--cream-dim);font-weight:500">· ${esc(me.real)}</span>`:"");
-  $("#ava").textContent=me.name[0].toUpperCase();
+  paintMe();
   draft={};renderFixtures();updatePoints();
 }
-function switchPlayer(){LS.write("mp:me","");me=null;draft={};$("#game").classList.add("hidden");$("#join").classList.remove("hidden");$("#nameInput").value="";$("#nameInput").focus();}
+function paintMe(){
+  $("#meName").innerHTML=esc(me.name)+(me.real?` <span style="color:var(--cream-dim);font-weight:500">· ${esc(me.real)}</span>`:"");
+  const a=$("#ava");a.textContent=avatarContent(me);a.style.background=avatarBg(me);
+}
+function logOut(){LS.write("mp:me","");me=null;draft={};closeReveal();$("#game").classList.add("hidden");$("#join").classList.remove("hidden");$("#nameInput").value="";$("#realInput").value="";$("#nameInput").focus();}
 async function refreshAll(){
   try{hostResults=await dbFetchResults();}catch(e){}
   try{allPlayers=await dbFetchPlayers();}catch(e){}
@@ -494,7 +582,7 @@ function setView(v){view=v;document.querySelectorAll(".tab").forEach(t=>t.setAtt
 $("#joinBtn").onclick=()=>enter($("#nameInput").value,$("#realInput").value);
 $("#nameInput").addEventListener("keydown",e=>{if(e.key==="Enter")$("#realInput").focus();});
 $("#realInput").addEventListener("keydown",e=>{if(e.key==="Enter")enter($("#nameInput").value,$("#realInput").value);});
-$("#switchBtn").onclick=switchPlayer;
+$("#editBtn").onclick=openEditProfile;
 $("#refreshBtn").onclick=()=>{refreshAll();toast("Board refreshed");};
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>setView(t.dataset.view));
 setInterval(()=>{if(me&&!document.hidden)refreshAll();},25000);
