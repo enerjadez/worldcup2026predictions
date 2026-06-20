@@ -76,6 +76,7 @@
   .team{display:flex;align-items:center;gap:9px;min-width:0}
   .team.away{flex-direction:row-reverse;text-align:right}
   .flag{font-size:30px;line-height:1;flex:none}
+  .flagimg{object-fit:contain;vertical-align:middle;border-radius:3px;flex:none;background:#fff}
   .tname{font-weight:700;font-size:15px;line-height:1.05}
   .tfav{font-family:'DM Mono';font-size:10px;color:var(--ink-soft);margin-top:2px}
   .stepper{display:flex;flex-direction:column;align-items:center;gap:5px}
@@ -248,7 +249,7 @@
         <p class="note">Your username, predictions and points are visible to everyone in the pool.</p>
       </div>
     </div>
-    <p class="footer">Live fixtures &amp; win probabilities from FIFA World Cup 2026 · times shown in your local timezone.</p>
+    <p class="footer"><span id="dataSrc">Connecting to live scores…</span> · times shown in your local timezone.</p>
   </main>
 </div>
 
@@ -285,7 +286,7 @@ MEX:"🇲🇽",KOR:"🇰🇷",USA:"🇺🇸",AUS:"🇦🇺",BRA:"🇧🇷",HTI:"
 GER:"🇩🇪",CIV:"🇨🇮",ECU:"🇪🇨",CUW:"🇨🇼",TUN:"🇹🇳",JPN:"🇯🇵",ESP:"🇪🇸",KSA:"🇸🇦",BEL:"🇧🇪",IRN:"🇮🇷",
 URU:"🇺🇾",CPV:"🇨🇻",NZL:"🇳🇿",EGY:"🇪🇬"};
 
-const FIXTURES=[
+const FALLBACK_FIXTURES=[
  {id:"g2",h:"AUT",a:"JOR",hn:"Austria",an:"Jordan",t:"2026-06-17T04:00:00Z",res:[3,1]},
  {id:"g3",h:"POR",a:"COD",hn:"Portugal",an:"Congo DR",t:"2026-06-17T17:00:00Z",res:[1,1]},
  {id:"g4",h:"ENG",a:"CRO",hn:"England",an:"Croatia",t:"2026-06-17T20:00:00Z",res:[4,2]},
@@ -308,7 +309,50 @@ const FIXTURES=[
  {id:"g20",h:"URU",a:"CPV",hn:"Uruguay",an:"Cape Verde",t:"2026-06-21T22:00:00Z",wp:[65,22,12]},
  {id:"g21",h:"NZL",a:"EGY",hn:"New Zealand",an:"Egypt",t:"2026-06-22T01:00:00Z",wp:[17,24,60]},
 ];
+let FIXTURES=FALLBACK_FIXTURES.slice();
 FIXTURES.sort((a,b)=>new Date(a.t)-new Date(b.t));
+
+/* ============ LIVE DATA: ESPN FIFA World Cup feed (no key, CORS-friendly) ============ */
+const ESPN_URL="https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?limit=300&dates=20260611-20260719";
+let liveOK=false;
+function normDate(s){return s&&/T\d\d:\d\d(Z|$)/.test(s)&&!/T\d\d:\d\d:\d\d/.test(s)?s.replace(/T(\d\d:\d\d)(Z|$)/,"T$1:00$2"):s;}
+function mapEspnEvent(ev){
+  const c=ev.competitions&&ev.competitions[0];if(!c)return null;
+  const home=c.competitors.find(x=>x.homeAway==="home")||c.competitors[0];
+  const away=c.competitors.find(x=>x.homeAway==="away")||c.competitors[1];
+  if(!home||!away)return null;
+  const st=(c.status&&c.status.type)||{};
+  const done=st.state==="post"||st.completed===true;
+  const res=done?[parseInt(home.score)||0,parseInt(away.score)||0]:null;
+  return {
+    id:"e"+ev.id,
+    h:home.team.abbreviation||"", a:away.team.abbreviation||"",
+    hn:home.team.shortDisplayName||home.team.displayName||home.team.name||"Home",
+    an:away.team.shortDisplayName||away.team.displayName||away.team.name||"Away",
+    hlogo:home.team.logo||"", alogo:away.team.logo||"",
+    t:normDate(ev.date), res, live:st.state==="in"
+  };
+}
+async function fetchLiveFixtures(){
+  const r=await fetch(ESPN_URL,{headers:{Accept:"application/json"}});
+  if(!r.ok) throw new Error("espn "+r.status);
+  const data=await r.json();
+  const events=(data&&data.events)||[];
+  const mapped=events.map(mapEspnEvent).filter(Boolean);
+  if(!mapped.length) throw new Error("no events");
+  return mapped;
+}
+async function loadFixtures(){
+  try{
+    const live=await fetchLiveFixtures();
+    live.sort((a,b)=>new Date(a.t)-new Date(b.t));
+    FIXTURES=live; liveOK=true;
+  }catch(e){
+    if(!liveOK){FIXTURES=FALLBACK_FIXTURES.slice().sort((a,b)=>new Date(a.t)-new Date(b.t));}
+  }
+  const el=document.getElementById("dataSrc");
+  if(el)el.textContent=liveOK?"Live scores from ESPN ✓":"Live feed unavailable — showing saved snapshot";
+}
 
 /* ============ storage: Supabase online, localStorage offline ============ */
 const memLS={};
@@ -373,6 +417,10 @@ const AVATAR_COLORS=["#F6A21E","#E8553A","#6FE0B0","#5AA9E6","#B98BE0","#2BB6A3"
 function avatarContent(p){return p&&p.avatar?p.avatar:(p&&p.name?p.name[0].toUpperCase():"?");}
 function avatarBg(p){return p&&p.color?p.color:"var(--marigold)";}
 function avatarChip(p,size){const s=size||30;return `<span class="avachip" style="background:${avatarBg(p)};width:${s}px;height:${s}px;font-size:${Math.round(s*0.5)}px">${esc(avatarContent(p))}</span>`;}
+/* team flag/badge: ESPN logo when live, emoji fallback otherwise */
+function teamBadge(f,side,size){const s=size||28;const logo=side==='h'?f.hlogo:f.alogo;const ab=side==='h'?f.h:f.a;
+  if(logo)return `<img class="flagimg" src="${logo}" alt="${esc(ab)}" style="width:${s}px;height:${s}px">`;
+  return `<span style="font-size:${s}px;line-height:1">${FLAG[ab]||"🏳️"}</span>`;}
 
 function totalPoints(player){let pts=0;FIXTURES.forEach(f=>{const res=effResult(f);if(!res)return;const s=score(player.preds&&player.preds[f.id],res);if(s!=null)pts+=s;});return pts;}
 function playerStats(player){let pts=0,exact=0,graded=0,hits=0;FIXTURES.forEach(f=>{const res=effResult(f);if(!res)return;const p=player.preds&&player.preds[f.id];if(!p)return;const s=score(p,res);graded++;pts+=s;if(s===5)exact++;if(s>0)hits++;});return{pts,exact,graded,acc:graded?Math.round(hits/graded*100):0};}
@@ -395,9 +443,9 @@ function slip(f){
   el.innerHTML=`
     <div class="slip-top"><span class="kick">${fmtKick(f.t)}</span>${pill}</div>
     <div class="match">
-      <div class="team home"><span class="flag">${FLAG[f.h]||"🏳️"}</span><div><div class="tname">${f.hn}</div>${favLine(f,'h')}</div></div>
+      <div class="team home"><span class="flag">${teamBadge(f,'h',30)}</span><div><div class="tname">${f.hn}</div>${favLine(f,'h')}</div></div>
       <div class="midcol">${stepper(f,0,cur[0],locked)}<span class="vs">v</span>${stepper(f,1,cur[1],locked)}</div>
-      <div class="team away"><span class="flag">${FLAG[f.a]||"🏳️"}</span><div><div class="tname">${f.an}</div>${favLine(f,'a')}</div></div>
+      <div class="team away"><span class="flag">${teamBadge(f,'a',30)}</span><div><div class="tname">${f.an}</div>${favLine(f,'a')}</div></div>
     </div>`;
   const foot=document.createElement("div");foot.className="slip-foot";
   if(!locked){
@@ -423,7 +471,7 @@ function slip(f){
   foot.appendChild(see);
   el.appendChild(foot);
 
-  if(locked&&!res){
+  if(locked&&!res&&!liveOK){
     const hb=document.createElement("div");hb.className="hostbox";
     hb.innerHTML=`<span class="lab">Final whistle? Log the score for everyone:</span>`;
     const ih=Object.assign(document.createElement("input"),{type:"number",min:0,value:0,className:"mini"});
@@ -482,7 +530,7 @@ function openReveal(f){
   const sub=locked?(res?`Full time · ${res[0]}–${res[1]}`:`In play · picks revealed`):`Picks hidden until kickoff · ${fmtKick(f.t)}`;
   sheet.innerHTML=`
     <div class="sheet-top">
-      <div><h3>${FLAG[f.h]||""} ${f.hn} v ${f.an} ${FLAG[f.a]||""}</h3><div class="matchsub">${sub}</div></div>
+      <div><h3 style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">${teamBadge(f,'h',22)} ${f.hn} <span style="color:var(--ink-soft)">v</span> ${f.an} ${teamBadge(f,'a',22)}</h3><div class="matchsub">${sub}</div></div>
       <button class="closeb" id="closeSheet" aria-label="close">×</button>
     </div>${rows}`;
   $("#overlay").classList.add("show");
@@ -582,7 +630,7 @@ function renderResults(){
     if(!picks.length)rows=`<div class="rnopicks">No one predicted this match.</div>`;
     html+=`<div class="rcard">
       <div class="rhead">
-        <div class="rteams"><span class="fl">${FLAG[f.h]||"🏳️"}</span> ${f.hn} <span style="color:var(--ink-soft)">v</span> ${f.an} <span class="fl">${FLAG[f.a]||"🏳️"}</span></div>
+        <div class="rteams"><span class="fl">${teamBadge(f,'h',20)}</span> ${f.hn} <span style="color:var(--ink-soft)">v</span> ${f.an} <span class="fl">${teamBadge(f,'a',20)}</span></div>
         ${scoreHTML}
       </div>
       <div class="rbody">${rows}</div>
@@ -612,6 +660,7 @@ function paintMe(){
 }
 function logOut(){LS.write("mp:me","");me=null;draft={};closeReveal();$("#game").classList.add("hidden");$("#join").classList.remove("hidden");$("#nameInput").value="";$("#realInput").value="";$("#nameInput").focus();}
 async function refreshAll(){
+  await loadFixtures();
   try{hostResults=await dbFetchResults();}catch(e){}
   try{allPlayers=await dbFetchPlayers();}catch(e){}
   if(me&&!allPlayers.find(p=>p.name===me.name))allPlayers.push(me);
@@ -646,6 +695,7 @@ async function checkConnection(){
 /* boot */
 (async function(){
   checkConnection();
+  await loadFixtures();
   try{hostResults=await dbFetchResults();}catch(e){}
   const saved=LS.read("mp:me","");
   if(saved)await enter(saved);else $("#nameInput").focus();
