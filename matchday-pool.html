@@ -346,6 +346,20 @@ async function fetchLiveFixtures(){
   return mapped;
 }
 function fxFromStore(id){const m=storedMeta[id]||{};return {id,h:m.h||"",a:m.a||"",hn:m.hn||"Home",an:m.an||"Away",hlogo:m.hlogo||"",alogo:m.alogo||"",t:m.t||new Date().toISOString(),res:hostResults[id]||null};}
+
+/* ----- prediction-ID migration: old placeholder/fallback IDs -> current ESPN IDs (matched by team pairing) ----- */
+let idMap={};
+function buildIdMigration(){
+  const byTeams={};
+  FIXTURES.forEach(f=>{if(f.h&&f.a)byTeams[(f.h+"|"+f.a).toUpperCase()]=f.id;});
+  const map={};
+  FALLBACK_FIXTURES.forEach(g=>{const t=byTeams[(g.h+"|"+g.a).toUpperCase()];if(t&&t!==g.id)map[g.id]=t;});
+  // also map saved-history snapshots (any id whose teams match a current fixture)
+  Object.keys(storedMeta).forEach(id=>{const m=storedMeta[id];if(!m||!m.h||!m.a)return;const t=byTeams[(m.h+"|"+m.a).toUpperCase()];if(t&&t!==id)map[id]=t;});
+  return map;
+}
+function migratePreds(preds){if(!preds)return {};const out={};for(const k in preds){const nk=idMap[k]||k;out[nk]=preds[k];}return out;}
+
 let lastGoodFixtures=[];
 async function loadFixtures(){
   try{await loadStoredResults();}catch(e){}
@@ -373,6 +387,7 @@ async function loadFixtures(){
   const ids=new Set(FIXTURES.map(f=>f.id));
   Object.keys(storedMeta).forEach(id=>{if(!ids.has(id))FIXTURES.push(fxFromStore(id));});
   FIXTURES.sort((a,b)=>new Date(a.t)-new Date(b.t));
+  idMap=buildIdMigration();
 
   const el=document.getElementById("dataSrc");
   if(el){
@@ -390,10 +405,10 @@ const LS={
   write(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){memLS[k]=v;}}
 };
 async function dbFetchPlayers(){
-  if(!ONLINE) return Object.values(LS.read("mp:players",{}));
+  if(!ONLINE) return Object.values(LS.read("mp:players",{})).map(x=>({name:x.name,real:x.real||"",avatar:x.avatar||"",color:x.color||"",preds:migratePreds(x.preds||{})}));
   const r=await fetch(REST+"players?select=*",{headers:HEAD});
   if(!r.ok) throw new Error("players read "+r.status);
-  return (await r.json()).map(x=>({name:x.name,real:x.real||"",avatar:x.avatar||"",color:x.color||"",preds:x.preds||{}}));
+  return (await r.json()).map(x=>({name:x.name,real:x.real||"",avatar:x.avatar||"",color:x.color||"",preds:migratePreds(x.preds||{})}));
 }
 async function dbSavePlayer(p){
   if(!ONLINE){const all=LS.read("mp:players",{});all[p.name]={name:p.name,real:p.real||"",avatar:p.avatar||"",color:p.color||"",preds:p.preds};LS.write("mp:players",all);return;}
