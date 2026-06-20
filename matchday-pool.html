@@ -323,14 +323,17 @@ function mapEspnEvent(ev){
   if(!home||!away)return null;
   const st=(c.status&&c.status.type)||{};
   const done=st.state==="post"||st.completed===true;
-  const res=done?[parseInt(home.score)||0,parseInt(away.score)||0]:null;
+  const live=st.state==="in";
+  const sc=[parseInt(home.score)||0,parseInt(away.score)||0];
+  const res=done?sc:null;
   return {
     id:"e"+ev.id,
     h:home.team.abbreviation||"", a:away.team.abbreviation||"",
     hn:home.team.shortDisplayName||home.team.displayName||home.team.name||"Home",
     an:away.team.shortDisplayName||away.team.displayName||away.team.name||"Away",
     hlogo:home.team.logo||"", alogo:away.team.logo||"",
-    t:normDate(ev.date), res, live:st.state==="in"
+    t:normDate(ev.date), res, live, sc:(live||done)?sc:null,
+    detail:(st.shortDetail||st.detail||"").trim()
   };
 }
 async function fetchLiveFixtures(){
@@ -343,36 +346,38 @@ async function fetchLiveFixtures(){
   return mapped;
 }
 function fxFromStore(id){const m=storedMeta[id]||{};return {id,h:m.h||"",a:m.a||"",hn:m.hn||"Home",an:m.an||"Away",hlogo:m.hlogo||"",alogo:m.alogo||"",t:m.t||new Date().toISOString(),res:hostResults[id]||null};}
+let lastGoodFixtures=[];
 async function loadFixtures(){
-  // always pull what's already saved in your table first (durable history + scoring)
   try{await loadStoredResults();}catch(e){}
-  let live=[];
+  let live=null;
   try{live=await fetchLiveFixtures();liveOK=true;}catch(e){liveOK=false;}
 
-  if(liveOK){
-    // write any newly finished results into YOUR results table (idempotent)
-    for(const f of live){
-      if(f.res){
-        const cur=hostResults[f.id];
+  if(live){
+    lastGoodFixtures=live.slice();
+    // persist any newly finished result into YOUR table — in the background, never blocking the UI
+    live.forEach(f=>{
+      if(f.res){const cur=hostResults[f.id];
         if(!cur||cur[0]!==f.res[0]||cur[1]!==f.res[1]){
-          try{await saveResult(f.id,f.res[0],f.res[1],{hn:f.hn,an:f.an,h:f.h,a:f.a,hlogo:f.hlogo,alogo:f.alogo,t:f.t});}catch(e){}
+          saveResult(f.id,f.res[0],f.res[1],{hn:f.hn,an:f.an,h:f.h,a:f.a,hlogo:f.hlogo,alogo:f.alogo,t:f.t}).catch(()=>{});
         }
       }
-    }
+    });
     FIXTURES=live.slice();
-    // include any saved match no longer in ESPN's window (post-tournament history safety)
-    const ids=new Set(FIXTURES.map(f=>f.id));
-    Object.keys(storedMeta).forEach(id=>{if(!ids.has(id))FIXTURES.push(fxFromStore(id));});
+  }else if(lastGoodFixtures.length){
+    FIXTURES=lastGoodFixtures.slice();      // transient blip: keep the last good board, don't drop games
   }else{
-    // ESPN down: rebuild finished matches from your table, fall back to snapshot for the rest
     const fromStore=Object.keys(storedMeta).map(fxFromStore);
     FIXTURES=fromStore.length?fromStore:FALLBACK_FIXTURES.slice();
   }
+  // include any saved match that isn't in the current board (history safety)
+  const ids=new Set(FIXTURES.map(f=>f.id));
+  Object.keys(storedMeta).forEach(id=>{if(!ids.has(id))FIXTURES.push(fxFromStore(id));});
   FIXTURES.sort((a,b)=>new Date(a.t)-new Date(b.t));
 
   const el=document.getElementById("dataSrc");
   if(el){
     if(liveOK)el.textContent="Live scores from ESPN, saved to your database ✓";
+    else if(lastGoodFixtures.length)el.textContent="Live feed paused — showing the last update";
     else if(Object.keys(storedMeta).length)el.textContent="Live feed down — showing saved results from your database";
     else el.textContent="Live feed unavailable — showing saved snapshot";
   }
@@ -472,9 +477,9 @@ function slip(f){
   const locked=isLocked(f),res=effResult(f),saved=me.preds&&me.preds[f.id],cur=draft[f.id]||saved||[0,0];
   const el=document.createElement("div");el.className="slip";
   let pill=`<span class="pill open">Open</span>`;
-  if(res)pill=`<span class="pill final">Full time</span>`;
-  else if(f.live)pill=`<span class="pill live">● Live</span>`;
-  else if(kickoffPassed(f))pill=`<span class="pill live">● Kicked off</span>`;
+  if(res)pill=`<span class="pill final">Full time · ${res[0]}–${res[1]}</span>`;
+  else if(f.live)pill=`<span class="pill live">● ${f.sc?f.sc[0]+'–'+f.sc[1]+' ':''}${f.detail||'Live'}</span>`;
+  else if(kickoffPassed(f))pill=`<span class="pill live">● ${f.sc?f.sc[0]+'–'+f.sc[1]+' ':''}Kicked off</span>`;
   el.innerHTML=`
     <div class="slip-top"><span class="kick">${fmtKick(f.t)}</span>${pill}</div>
     <div class="match">
@@ -495,7 +500,8 @@ function slip(f){
     if(myp){const badge=document.createElement("span");badge.className="pts pop "+ptsClass(s);badge.innerHTML=`<span class="big">${s>0?'+':''}${s}</span> ${ptsLabel(s)}`;foot.appendChild(badge);}
   }else{
     const left=document.createElement("div");left.className="resultline";
-    left.innerHTML=saved?`Locked: <b>${saved[0]}–${saved[1]}</b> · awaiting result`:`No pick — match in play`;
+    const liveScore=f.sc?` · live <b>${f.sc[0]}–${f.sc[1]}</b>${f.detail?" ("+f.detail+")":""}`:` · match in play`;
+    left.innerHTML=(saved?`Locked: <b>${saved[0]}–${saved[1]}</b>`:`No pick`)+liveScore;
     foot.appendChild(left);
   }
   // See-picks button (always present)
@@ -656,7 +662,9 @@ function renderResults(){
     const res=effResult(f);
     const picks=picksFor(f.id).map(p=>{const pr=p.preds[f.id];return{p,pr,s:res?score(pr,res):null};});
     if(res)picks.sort((a,b)=>b.s-a.s); else picks.sort((a,b)=>a.p.name.localeCompare(b.p.name));
-    const scoreHTML=res?`<span class="rscore">${res[0]}–${res[1]}</span>`:`<span class="rscore pending">${f.live?"Live":"Awaiting score"}</span>`;
+    const scoreHTML=res?`<span class="rscore">${res[0]}–${res[1]}</span>`
+      :(f.live&&f.sc)?`<span class="rscore">${f.sc[0]}–${f.sc[1]} <small style="font-family:'DM Mono';font-size:9px;letter-spacing:.1em">LIVE</small></span>`
+      :`<span class="rscore pending">${f.live?"Live":"Awaiting score"}</span>`;
     let rows=picks.map(({p,pr,s})=>`
       <div class="rpick">
         ${avatarChip(p,30)}
@@ -700,7 +708,7 @@ async function refreshAll(){
   await loadFixtures();
   try{allPlayers=await dbFetchPlayers();}catch(e){}
   if(me&&!allPlayers.find(p=>p.name===me.name))allPlayers.push(me);
-  const fresh=me&&allPlayers.find(p=>p.name===me.name);if(fresh)me.preds=Object.keys(draft).length?me.preds:(fresh.preds||me.preds);
+  const fresh=me&&allPlayers.find(p=>p.name===me.name);if(fresh)me.preds=Object.assign({},fresh.preds||{},me.preds);
   renderFixtures();updatePoints();if(view==="board")renderBoard();if(view==="results")renderResults();
 }
 
