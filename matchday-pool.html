@@ -222,7 +222,7 @@
       </div>
       <div class="ptbox"><div class="n" id="mePts">0</div><div class="l">your points</div></div>
     </div>
-    <div class="mode"><span class="dot" id="modeDot"></span><span id="modeText"></span></div>
+    <div class="mode"><span class="dot" id="modeDot"></span><span id="modeText"></span><span id="pickStat" style="margin-left:auto;font-family:'DM Mono';font-size:11px;color:var(--cream-dim)"></span></div>
 
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" aria-selected="true" data-view="fixtures">Fixtures</button>
@@ -347,18 +347,40 @@ async function fetchLiveFixtures(){
 }
 function fxFromStore(id){const m=storedMeta[id]||{};return {id,h:m.h||"",a:m.a||"",hn:m.hn||"Home",an:m.an||"Away",hlogo:m.hlogo||"",alogo:m.alogo||"",t:m.t||new Date().toISOString(),res:hostResults[id]||null};}
 
-/* ----- prediction-ID migration: old placeholder/fallback IDs -> current ESPN IDs (matched by team pairing) ----- */
+/* ----- prediction-ID migration: old placeholder/fallback IDs -> current ESPN IDs -----
+   Matches each team by abbreviation OR normalised name (handles code differences like
+   Haiti HTI vs HAI), order-independent, flipping the scoreline when orientation differs. */
 let idMap={};
+function normName(s){return (s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z]/g,"");}
+function teamEq(ab1,nm1,ab2,nm2){
+  if(ab1&&ab2&&ab1.toUpperCase()===ab2.toUpperCase())return true;
+  const n1=normName(nm1),n2=normName(nm2);
+  return !!n1&&!!n2&&(n1===n2||n1.includes(n2)||n2.includes(n1));
+}
 function buildIdMigration(){
-  const byTeams={};
-  FIXTURES.forEach(f=>{if(f.h&&f.a)byTeams[(f.h+"|"+f.a).toUpperCase()]=f.id;});
+  const cur=FIXTURES.map(f=>({id:f.id,h:f.h,a:f.a,hn:f.hn,an:f.an}));
   const map={};
-  FALLBACK_FIXTURES.forEach(g=>{const t=byTeams[(g.h+"|"+g.a).toUpperCase()];if(t&&t!==g.id)map[g.id]=t;});
-  // also map saved-history snapshots (any id whose teams match a current fixture)
-  Object.keys(storedMeta).forEach(id=>{const m=storedMeta[id];if(!m||!m.h||!m.a)return;const t=byTeams[(m.h+"|"+m.a).toUpperCase()];if(t&&t!==id)map[id]=t;});
+  const find=(h,a,hn,an,selfId)=>{
+    for(const f of cur){
+      if(f.id===selfId)continue;
+      if(teamEq(h,hn,f.h,f.hn)&&teamEq(a,an,f.a,f.an))return {id:f.id,flip:false};
+      if(teamEq(h,hn,f.a,f.an)&&teamEq(a,an,f.h,f.hn))return {id:f.id,flip:true};
+    }
+    return null;
+  };
+  FALLBACK_FIXTURES.forEach(g=>{const m=find(g.h,g.a,g.hn,g.an,g.id);if(m)map[g.id]=m;});
+  Object.keys(storedMeta).forEach(id=>{const sm=storedMeta[id];if(sm){const m=find(sm.h,sm.a,sm.hn,sm.an,id);if(m)map[id]=m;}});
   return map;
 }
-function migratePreds(preds){if(!preds)return {};const out={};for(const k in preds){const nk=idMap[k]||k;out[nk]=preds[k];}return out;}
+function migratePreds(preds){
+  if(!preds)return {};const out={};
+  for(const k in preds){
+    const v=preds[k], mm=idMap[k];
+    if(mm&&Array.isArray(v)){out[mm.id]=mm.flip?[v[1],v[0]]:[v[0],v[1]];}
+    else{out[k]=v;}
+  }
+  return out;
+}
 
 let lastGoodFixtures=[];
 async function loadFixtures(){
@@ -698,7 +720,13 @@ function renderResults(){
   });
   root.innerHTML=html;
 }
-function updatePoints(){$("#mePts").textContent=totalPoints(me);}
+function updatePoints(){
+  $("#mePts").textContent=totalPoints(me);
+  const ids=new Set(FIXTURES.map(f=>f.id));
+  const keys=me&&me.preds?Object.keys(me.preds):[];
+  const linked=keys.filter(k=>ids.has(k)).length;
+  const el=$("#pickStat");if(el)el.textContent=keys.length?`${linked}/${keys.length} picks linked`:"";
+}
 async function enter(name, real){
   name=name.trim().slice(0,16);if(!name){toast("Pick a username first");return;}
   try{allPlayers=await dbFetchPlayers();}catch(e){allPlayers=[];}
@@ -722,8 +750,11 @@ function logOut(){LS.write("mp:me","");me=null;draft={};closeReveal();$("#game")
 async function refreshAll(){
   await loadFixtures();
   try{allPlayers=await dbFetchPlayers();}catch(e){}
-  if(me&&!allPlayers.find(p=>p.name===me.name))allPlayers.push(me);
-  const fresh=me&&allPlayers.find(p=>p.name===me.name);if(fresh)me.preds=Object.assign({},fresh.preds||{},me.preds);
+  if(me){
+    const idx=allPlayers.findIndex(p=>p.name===me.name);
+    if(idx<0){allPlayers.push(me);}
+    else{me.preds=Object.assign({},allPlayers[idx].preds||{},me.preds);allPlayers[idx]=me;}
+  }
   renderFixtures();updatePoints();if(view==="board")renderBoard();if(view==="results")renderResults();
 }
 
