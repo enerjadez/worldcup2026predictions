@@ -342,16 +342,40 @@ async function fetchLiveFixtures(){
   if(!mapped.length) throw new Error("no events");
   return mapped;
 }
+function fxFromStore(id){const m=storedMeta[id]||{};return {id,h:m.h||"",a:m.a||"",hn:m.hn||"Home",an:m.an||"Away",hlogo:m.hlogo||"",alogo:m.alogo||"",t:m.t||new Date().toISOString(),res:hostResults[id]||null};}
 async function loadFixtures(){
-  try{
-    const live=await fetchLiveFixtures();
-    live.sort((a,b)=>new Date(a.t)-new Date(b.t));
-    FIXTURES=live; liveOK=true;
-  }catch(e){
-    if(!liveOK){FIXTURES=FALLBACK_FIXTURES.slice().sort((a,b)=>new Date(a.t)-new Date(b.t));}
+  // always pull what's already saved in your table first (durable history + scoring)
+  try{await loadStoredResults();}catch(e){}
+  let live=[];
+  try{live=await fetchLiveFixtures();liveOK=true;}catch(e){liveOK=false;}
+
+  if(liveOK){
+    // write any newly finished results into YOUR results table (idempotent)
+    for(const f of live){
+      if(f.res){
+        const cur=hostResults[f.id];
+        if(!cur||cur[0]!==f.res[0]||cur[1]!==f.res[1]){
+          try{await saveResult(f.id,f.res[0],f.res[1],{hn:f.hn,an:f.an,h:f.h,a:f.a,hlogo:f.hlogo,alogo:f.alogo,t:f.t});}catch(e){}
+        }
+      }
+    }
+    FIXTURES=live.slice();
+    // include any saved match no longer in ESPN's window (post-tournament history safety)
+    const ids=new Set(FIXTURES.map(f=>f.id));
+    Object.keys(storedMeta).forEach(id=>{if(!ids.has(id))FIXTURES.push(fxFromStore(id));});
+  }else{
+    // ESPN down: rebuild finished matches from your table, fall back to snapshot for the rest
+    const fromStore=Object.keys(storedMeta).map(fxFromStore);
+    FIXTURES=fromStore.length?fromStore:FALLBACK_FIXTURES.slice();
   }
+  FIXTURES.sort((a,b)=>new Date(a.t)-new Date(b.t));
+
   const el=document.getElementById("dataSrc");
-  if(el)el.textContent=liveOK?"Live scores from ESPN ✓":"Live feed unavailable — showing saved snapshot";
+  if(el){
+    if(liveOK)el.textContent="Live scores from ESPN, saved to your database ✓";
+    else if(Object.keys(storedMeta).length)el.textContent="Live feed down — showing saved results from your database";
+    else el.textContent="Live feed unavailable — showing saved snapshot";
+  }
 }
 
 /* ============ storage: Supabase online, localStorage offline ============ */
@@ -380,21 +404,32 @@ async function dbDeletePlayer(name){
   if(!ONLINE){const all=LS.read("mp:players",{});delete all[name];LS.write("mp:players",all);return;}
   await fetch(REST+"players?name=eq."+encodeURIComponent(name),{method:"DELETE",headers:HEAD});
 }
-async function dbFetchResults(){
-  if(!ONLINE) return LS.read("mp:results",{});
-  const r=await fetch(REST+"results?select=game_id,home,away",{headers:HEAD});
+// Results live in YOUR Supabase `results` table: score + a meta snapshot of the match.
+// ESPN finals are written here so calculation + history run off data you own.
+async function loadStoredResults(){
+  if(!ONLINE){
+    const o=LS.read("mp:results",{});hostResults={};storedMeta={};
+    Object.keys(o).forEach(id=>{const v=o[id];if(Array.isArray(v)){hostResults[id]=v;}else if(v){hostResults[id]=v.score;if(v.meta)storedMeta[id]=v.meta;}});
+    return;
+  }
+  const r=await fetch(REST+"results?select=*",{headers:HEAD});
   if(!r.ok) throw new Error("results read "+r.status);
-  const o={};(await r.json()).forEach(x=>o[x.game_id]=[x.home,x.away]);return o;
+  hostResults={};storedMeta={};
+  (await r.json()).forEach(x=>{hostResults[x.game_id]=[x.home,x.away];if(x.meta)storedMeta[x.game_id]=x.meta;});
 }
-async function dbSaveResult(id,h,a){
-  if(!ONLINE){const o=LS.read("mp:results",{});o[id]=[h,a];LS.write("mp:results",o);return;}
-  const r=await fetch(REST+"results",{method:"POST",headers:{...HEAD,Prefer:"resolution=merge-duplicates"},
-    body:JSON.stringify([{game_id:id,home:h,away:a}])});
+async function saveResult(id,h,a,meta){
+  hostResults[id]=[h,a];if(meta)storedMeta[id]=meta;
+  if(!ONLINE){const o=LS.read("mp:results",{});o[id]={score:[h,a],meta:meta||(o[id]&&o[id].meta)||null};LS.write("mp:results",o);return;}
+  const m=meta||storedMeta[id]||null;
+  let r=await fetch(REST+"results",{method:"POST",headers:{...HEAD,Prefer:"resolution=merge-duplicates"},body:JSON.stringify([{game_id:id,home:h,away:a,meta:m}])});
+  if(!r.ok){ // retry without meta column if it doesn't exist yet
+    r=await fetch(REST+"results",{method:"POST",headers:{...HEAD,Prefer:"resolution=merge-duplicates"},body:JSON.stringify([{game_id:id,home:h,away:a}])});
+  }
   if(!r.ok) throw new Error("result save "+r.status);
 }
 
 /* ============ state ============ */
-let me=null, draft={}, hostResults={}, allPlayers=[], view="fixtures";
+let me=null, draft={}, hostResults={}, storedMeta={}, allPlayers=[], view="fixtures";
 
 /* ============ helpers ============ */
 const $=s=>document.querySelector(s);
@@ -504,7 +539,9 @@ async function lockIn(id){
   await refreshAll();
 }
 async function submitResult(id,h,a){
-  try{await dbSaveResult(id,h,a);hostResults[id]=[h,a];toast("Result logged — board updated");}
+  const f=FIXTURES.find(x=>x.id===id);
+  const meta=f?{hn:f.hn,an:f.an,h:f.h,a:f.a,hlogo:f.hlogo,alogo:f.alogo,t:f.t}:null;
+  try{await saveResult(id,h,a,meta);toast("Result logged — board updated");}
   catch(e){toast("Could not save result");}
   await refreshAll();if(view==="board")renderBoard();
 }
@@ -646,7 +683,7 @@ async function enter(name, real){
   real=(real||"").trim().slice(0,30)||(existing&&existing.real)||"";
   me=existing?{name:existing.name,real:real,avatar:existing.avatar||"",color:existing.color||"",preds:existing.preds||{}}:{name,real,avatar:"",color:"",preds:{}};
   LS.write("mp:me",me.name);
-  try{hostResults=await dbFetchResults();}catch(e){}
+  try{await loadStoredResults();}catch(e){}
   const idx=allPlayers.findIndex(p=>p.name===me.name);
   if(idx<0)allPlayers.push(me);else allPlayers[idx]=me;
   try{await dbSavePlayer(me);}catch(e){}
@@ -661,7 +698,6 @@ function paintMe(){
 function logOut(){LS.write("mp:me","");me=null;draft={};closeReveal();$("#game").classList.add("hidden");$("#join").classList.remove("hidden");$("#nameInput").value="";$("#realInput").value="";$("#nameInput").focus();}
 async function refreshAll(){
   await loadFixtures();
-  try{hostResults=await dbFetchResults();}catch(e){}
   try{allPlayers=await dbFetchPlayers();}catch(e){}
   if(me&&!allPlayers.find(p=>p.name===me.name))allPlayers.push(me);
   const fresh=me&&allPlayers.find(p=>p.name===me.name);if(fresh)me.preds=Object.keys(draft).length?me.preds:(fresh.preds||me.preds);
@@ -696,7 +732,6 @@ async function checkConnection(){
 (async function(){
   checkConnection();
   await loadFixtures();
-  try{hostResults=await dbFetchResults();}catch(e){}
   const saved=LS.read("mp:me","");
   if(saved)await enter(saved);else $("#nameInput").focus();
 })();
