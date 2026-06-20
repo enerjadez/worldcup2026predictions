@@ -115,6 +115,19 @@
 
   .lb{background:var(--paper);color:var(--ink);border-radius:16px;overflow:hidden;border:1px solid var(--paper-edge)}
   .lbrow{display:grid;grid-template-columns:42px 1fr auto auto;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--paper-edge)}
+  .rcard{background:var(--paper);color:var(--ink);border-radius:16px;border:1px solid var(--paper-edge);margin-bottom:13px;overflow:hidden;box-shadow:0 8px 22px rgba(0,0,0,.2)}
+  .rhead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 15px;background:#efe6cf;border-bottom:1px solid var(--paper-edge)}
+  .rteams{font-weight:700;font-size:15px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .rteams .fl{font-size:20px}
+  .rscore{font-family:'Anton';font-size:26px;background:var(--ink);color:var(--paper);border-radius:9px;padding:2px 12px;white-space:nowrap}
+  .rscore.pending{background:var(--coral);font-size:11px;font-family:'DM Mono';letter-spacing:.1em;text-transform:uppercase;padding:6px 10px}
+  .rbody{padding:6px 15px 10px}
+  .rpick{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--paper-edge)}
+  .rpick:last-child{border-bottom:none}
+  .rpick .nm{flex:1;font-weight:600;font-size:14px;min-width:0}
+  .rpick .nm small{display:block;font-family:'DM Mono';font-size:11px;color:var(--ink-soft);font-weight:400}
+  .rpick .guess{font-family:'Anton';font-size:17px;color:var(--ink-soft)}
+  .rnopicks{padding:12px 0;color:var(--ink-soft);font-family:'DM Mono';font-size:12px}
   .lbrow:last-child{border-bottom:none}
   .lbrow.you{background:#fff6e6}
   .rank{font-family:'Anton';font-size:24px;color:var(--ink-soft);text-align:center}
@@ -212,11 +225,13 @@
 
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" aria-selected="true" data-view="fixtures">Fixtures</button>
-      <button class="tab" role="tab" aria-selected="false" data-view="board">Leaderboard</button>
-      <button class="tab" role="tab" aria-selected="false" data-view="how">How it works</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="results">Results</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="board">Table</button>
+      <button class="tab" role="tab" aria-selected="false" data-view="how">Info</button>
     </div>
 
     <div id="view-fixtures"></div>
+    <div id="view-results" class="hidden"></div>
     <div id="view-board" class="hidden"></div>
     <div id="view-how" class="hidden">
       <div class="card">
@@ -546,7 +561,35 @@ function renderBoard(){
   html+=`</div>`;root.innerHTML=html;
 }
 
-/* ============ session ============ */
+/* ============ results recap: every match + who predicted what ============ */
+function renderResults(){
+  const root=$("#view-results");
+  const played=FIXTURES.filter(f=>isLocked(f)).sort((a,b)=>new Date(b.t)-new Date(a.t));
+  if(!played.length){root.innerHTML=`<div class="empty">No matches have kicked off yet. Predictions are revealed here once each game starts.</div>`;return;}
+  let html="";
+  played.forEach(f=>{
+    const res=effResult(f);
+    const picks=picksFor(f.id).map(p=>{const pr=p.preds[f.id];return{p,pr,s:res?score(pr,res):null};});
+    if(res)picks.sort((a,b)=>b.s-a.s); else picks.sort((a,b)=>a.p.name.localeCompare(b.p.name));
+    const scoreHTML=res?`<span class="rscore">${res[0]}–${res[1]}</span>`:`<span class="rscore pending">${f.live?"Live":"Awaiting score"}</span>`;
+    let rows=picks.map(({p,pr,s})=>`
+      <div class="rpick">
+        ${avatarChip(p,30)}
+        <div class="nm">${esc(p.name)}${p.name===me.name?" (you)":""}${p.real?`<small>${esc(p.real)}</small>`:""}</div>
+        <span class="guess">${pr[0]}–${pr[1]}</span>
+        ${res?`<span class="pts ${ptsClass(s)}" style="padding:5px 10px"><span class="big" style="font-size:16px">${s>0?'+':''}${s}</span></span>`:""}
+      </div>`).join("");
+    if(!picks.length)rows=`<div class="rnopicks">No one predicted this match.</div>`;
+    html+=`<div class="rcard">
+      <div class="rhead">
+        <div class="rteams"><span class="fl">${FLAG[f.h]||"🏳️"}</span> ${f.hn} <span style="color:var(--ink-soft)">v</span> ${f.an} <span class="fl">${FLAG[f.a]||"🏳️"}</span></div>
+        ${scoreHTML}
+      </div>
+      <div class="rbody">${rows}</div>
+    </div>`;
+  });
+  root.innerHTML=html;
+}
 function updatePoints(){$("#mePts").textContent=totalPoints(me);}
 async function enter(name, real){
   name=name.trim().slice(0,16);if(!name){toast("Pick a username first");return;}
@@ -573,12 +616,12 @@ async function refreshAll(){
   try{allPlayers=await dbFetchPlayers();}catch(e){}
   if(me&&!allPlayers.find(p=>p.name===me.name))allPlayers.push(me);
   const fresh=me&&allPlayers.find(p=>p.name===me.name);if(fresh)me.preds=Object.keys(draft).length?me.preds:(fresh.preds||me.preds);
-  renderFixtures();updatePoints();if(view==="board")renderBoard();
+  renderFixtures();updatePoints();if(view==="board")renderBoard();if(view==="results")renderResults();
 }
 
 /* ============ views + wiring ============ */
 function setView(v){view=v;document.querySelectorAll(".tab").forEach(t=>t.setAttribute("aria-selected",t.dataset.view===v));
-  $("#view-fixtures").classList.toggle("hidden",v!=="fixtures");$("#view-board").classList.toggle("hidden",v!=="board");$("#view-how").classList.toggle("hidden",v!=="how");if(v==="board")renderBoard();}
+  $("#view-fixtures").classList.toggle("hidden",v!=="fixtures");$("#view-results").classList.toggle("hidden",v!=="results");$("#view-board").classList.toggle("hidden",v!=="board");$("#view-how").classList.toggle("hidden",v!=="how");if(v==="board")renderBoard();if(v==="results")renderResults();}
 $("#joinBtn").onclick=()=>enter($("#nameInput").value,$("#realInput").value);
 $("#nameInput").addEventListener("keydown",e=>{if(e.key==="Enter")$("#realInput").focus();});
 $("#realInput").addEventListener("keydown",e=>{if(e.key==="Enter")enter($("#nameInput").value,$("#realInput").value);});
